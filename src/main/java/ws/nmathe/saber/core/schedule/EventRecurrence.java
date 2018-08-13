@@ -1,5 +1,7 @@
 package ws.nmathe.saber.core.schedule;
 
+import ws.nmathe.saber.utils.Logging;
+
 import java.time.*;
 import java.time.format.DateTimeFormatter;
 import java.time.format.TextStyle;
@@ -468,11 +470,18 @@ public class EventRecurrence
             case MONTH2_MODE:
                 int dayOfMonth    = data&0b11111;
                 int monthInterval = data>>5;
-                if (dayOfMonth > 0) return date.plusMonths(monthInterval).withDayOfMonth(dayOfMonth);
-                else return date.plusMonths(monthInterval);
+                if (dayOfMonth > 0)
+                {   // dayOfMonth portion indicates the day of the month the event should repeat on
+                    return date.plusMonths(monthInterval).withDayOfMonth(dayOfMonth);
+                }
+                else
+                {   // if the monthInterval portion is zero, increment to onet
+                    return date.plusMonths(monthInterval == 0 ? 1 : monthInterval);
+                }
 
             // something went wrong
             default:
+                Logging.warn(this.getClass(), "Encountered invalid repeat mode!");
                 return date;
         }
     }

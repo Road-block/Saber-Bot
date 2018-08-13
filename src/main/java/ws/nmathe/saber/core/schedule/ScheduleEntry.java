@@ -16,6 +16,7 @@ import java.time.temporal.ChronoUnit;
 import java.util.*;
 import java.util.List;
 import java.util.concurrent.TimeUnit;
+import java.util.function.Consumer;
 
 /**
  * A ScheduleEntry object represents a currently scheduled entry is either waiting to start or has already started
@@ -652,18 +653,15 @@ public class ScheduleEntry
      */
     private ScheduleEntry setNextOccurrence()
     {
-        ZonedDateTime now = ZonedDateTime.now();
-
         // update to next occurrence
         this.start = this.recurrence.next(this.start);
         this.end   = this.recurrence.next(this.end);
 
-        // keep updating the date times until the next
-        // occurrence is in the future
-        while (this.start.isBefore(now))
+        ZonedDateTime now = ZonedDateTime.now();
+        if (this.start.isBefore(now))
         {
-            this.start = this.recurrence.next(this.start);
-            this.end   = this.recurrence.next(this.end);
+            Logging.warn(this.getClass(),
+                    "The next occurrence date for event #"+this.getId()+" is invalid! ("+this.recurrence+")");
         }
         return this;
     }
