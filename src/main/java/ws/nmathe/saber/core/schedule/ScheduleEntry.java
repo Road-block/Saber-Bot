@@ -219,13 +219,9 @@ public class ScheduleEntry
      */
     public void announce()
     {
-        Message msg = this.getMessageObject();
-        if(msg == null) return; // if msg object is bad
-
-        Set<String> announcementIDs = this.aTimes.keySet();
         // find all expired Dates' announcement IDs
         Collection<String> expired = new ArrayList<>();
-        for(String ID : announcementIDs)
+        for(String ID : this.aTimes.keySet())
         {
             Date date = this.aDates.get(ID);
             if(date!=null && date.before(new Date())) expired.add(ID);
@@ -236,19 +232,21 @@ public class ScheduleEntry
         expired.forEach(key-> this.aDates.remove(key));           // remove from ID mapping to announcement set
 
         // update db entry
-        int count = 12;
-        while (!Main.getEntryManager().updateEntry(this, false)
-                && (count > 0)) { count--; }
-        if (count==0) return; // don't send reminder if db couldn't update
+        Main.getEntryManager().updateEntry(this, false);
 
         // send announcements
-        expired.forEach(key->
+        this.getMessageObject((message) ->
         {
-            String message = ParsingUtilities.processText(this.aMessages.get(key), this, true);
-            String target = this.aTargets.get(key);
-            announcementHelper(msg, message, target);
-            Logging.event(this.getClass(), "Sent special announcement for event " +
-                    this.getTitle() + " [" + this.getId() + "]");
+            expired.forEach(key->
+            {
+                String text = ParsingUtilities.processText(this.aMessages.get(key), this, true);
+                String target = this.aTargets.get(key);
+
+                // send announcement
+                this.makeAnnouncement(message, text, target);
+                Logging.event(this.getClass(), "Sent special announcement for event " +
+                        this.getTitle() + " [" + this.getId() + "]");
+            });
         });
     }
 
@@ -257,29 +255,26 @@ public class ScheduleEntry
      */
     public void remind()
     {
-        Message msg = this.getMessageObject();
-        if(msg == null) return;         // if msg object is bad
-
         // remove expired reminders
         this.reminders.removeIf(date -> date.before(new Date()));
         this.endReminders.removeIf(date -> date.before(new Date()));
 
         // attempt to update the db record
-        int count = 12;
-        while (!Main.getEntryManager().updateEntry(this, false)
-                && (count > 0)) { count--; }
-        if (count==0) return; // don't send reminder if db couldn't update
+        Main.getEntryManager().updateEntry(this, false);
 
         // send reminder
-        if(!this.quietRemind)
+        if (!this.quietRemind)
         {
             // parse message and get the target channels
-            String remindMsg = ParsingUtilities.processText(Main.getScheduleManager().getReminderFormat(this.chanId), this, true);
+            String text = ParsingUtilities.processText(Main.getScheduleManager().getReminderFormat(this.chanId), this, true);
             String identifier = Main.getScheduleManager().getReminderChan(this.chanId);
-            if(identifier != null)
+            if (identifier != null)
             {
-                announcementHelper(msg, remindMsg, identifier);
-                Logging.event(this.getClass(), "Sent reminder for event " + this.getTitle() + " [" + this.getId() + "]");
+                this.getMessageObject((message)->
+                {
+                    this.makeAnnouncement(message, text, identifier);
+                    Logging.event(this.getClass(), "Sent reminder for event " + this.getTitle() + " [" + this.getId() + "]");
+                });
             }
         }
     }
@@ -289,11 +284,11 @@ public class ScheduleEntry
      */
     public void start()
     {
-        Message msg = this.getMessageObject();
-        if( msg == null ) return;
+        Message message = this.getMessageObject();
+        if (message == null) return;
 
         // create start message and grab identifier before modifying entry
-        String startMsg = ParsingUtilities.processText(Main.getScheduleManager().getStartAnnounceFormat(this.chanId), this, true);
+        String text = ParsingUtilities.processText(Main.getScheduleManager().getStartAnnounceFormat(this.chanId), this, true);
         String identifier = Main.getScheduleManager().getStartAnnounceChan(this.chanId);
 
         // is the announcement late?
@@ -302,30 +297,24 @@ public class ScheduleEntry
 
         // do database updates before sending announcement
         if (this.start.isEqual(this.end))
-        {
-            // if the entry's start time is the same as it's end
-            // try to process the event's repeat action before announcement
-            if (!this.repeat()) return;
+        {   // process event repeat
+            this.repeat(message);
         }
         else // update event to has started
         {    // try to update db
             this.hasStarted = true;
-            int count = 12;
-            while (!Main.getEntryManager().startEvent(this)
-                    && (count>0)) { count--; }
-            if (count==0) return;
-            this.reloadDisplay();
+            Main.getEntryManager().startEvent(this);
         }
 
         // send start announcement
-        if(!this.quietStart)
+        if (!this.quietStart)
         {
             // dont send start announcements if 15 minutes late
-            if(late)
+            if (late)
             {
-                if(identifier != null)
+                if (identifier != null)
                 {
-                    announcementHelper(msg, startMsg, identifier);
+                    this.makeAnnouncement(message, text, identifier);
                     Logging.event(this.getClass(), "Started event \"" + this.getTitle() + "\" [" + this.entryId + "] scheduled for " +
                             this.getStart().withZoneSameInstant(ZoneId.systemDefault())
                                     .truncatedTo(ChronoUnit.MINUTES).toLocalTime().toString());
@@ -343,11 +332,11 @@ public class ScheduleEntry
      */
     public void end()
     {
-        Message msg = this.getMessageObject();
-        if(msg == null) return;
+        Message message = this.getMessageObject();
+        if (message == null) return;
 
         // create the announcement message before modifying event
-        String endMsg = ParsingUtilities.processText(Main.getScheduleManager()
+        String text = ParsingUtilities.processText(Main.getScheduleManager()
                 .getEndAnnounceFormat(this.chanId), this, true);
         String identifier = Main.getScheduleManager().getEndAnnounceChan(this.chanId);
 
@@ -355,19 +344,19 @@ public class ScheduleEntry
         Integer threshold = Main.getGuildSettingsManager().getGuildSettings(this.getGuildId()).getLateThreshold();
         Boolean late = this.end.isAfter(ZonedDateTime.now().minusMinutes(threshold));
 
-        // attempt to adjust the database entry per repeat settings
-        if (!this.repeat()) return; // don't send announcement if failure
+        // update entry
+        this.repeat(message);
 
         // send announcement
-        if(!this.quietEnd)
+        if (!this.quietEnd)
         {
             // dont send end announcement if late
-            if(late)
+            if (late)
             {
                 // send the end announcement
-                if(identifier != null)
+                if (identifier != null)
                 {
-                    announcementHelper(msg, endMsg, identifier);
+                    this.makeAnnouncement(message, text, identifier);
                     String logStr = "Ended event \"" + this.getTitle() + "\" [" + this.entryId + "] scheduled for " +
                             this.getEnd().withZoneSameInstant(ZoneId.systemDefault()).truncatedTo(ChronoUnit.MINUTES).toLocalTime();
                     Logging.event(this.getClass(), logStr);
@@ -387,42 +376,43 @@ public class ScheduleEntry
     public boolean repeat()
     {
         Message msg = this.getMessageObject();
-        if( msg==null ) return false;
+        if (msg == null) return false;
+        this.repeat(msg);
+        return true;
+    }
 
-        if(this.recurrence.shouldRepeat(this.start)) // find next repeat date and edit the message
+    private void repeat(Message message)
+    {
+        if (this.recurrence.shouldRepeat(this.start)) // find next repeat date and edit the message
         {
-            this.setNextOccurrence().setStarted(false);
+            this.setNextOccurrence();
+            this.setStarted(false);
 
             // if the next time an event repeats is after the event's expire, delete the event
             ZonedDateTime expire = this.recurrence.getExpire();
-            if(expire != null && expire.isBefore(this.getStart()))
+            if (expire != null && expire.isBefore(this.getStart()))
             {
                 Main.getEntryManager().removeEntry(this.entryId);
-                MessageUtilities.deleteMsg(msg, null);
-                return true;
+                MessageUtilities.deleteMsg(message, null);
+                return;
             }
 
-            // recreate the announcement overrides
+            // reload time-dependent announcements
             this.regenerateAnnouncementOverrides();
+            this.reloadReminders(Main.getScheduleManager().getReminders(this.chanId));
+            this.reloadEndReminders(Main.getScheduleManager().getEndReminders(this.chanId));
 
             // clear rsvp members list and reload reminders
             this.rsvpMembers = new HashMap<>();
-            this.reloadReminders(Main.getScheduleManager().getReminders(this.chanId))
-                    .reloadEndReminders(Main.getScheduleManager().getEndReminders(this.chanId));
 
-            int count = 12;
-            while (!Main.getEntryManager().updateEntry(this, true)
-                    && (count > 0)) { count--; }
-            if (count==0) return false;
+            // send changes to database
+            Main.getEntryManager().updateEntry(this, true);
         }
         else // otherwise remove entry and delete the message
         {
-            MessageUtilities.deleteMsg(msg, null);
-            int count = 15;
-            while (!Main.getEntryManager().removeEntry(this.entryId)
-                    && (count>0)) {count--;}
+            MessageUtilities.deleteMsg(message, null);
+            Main.getEntryManager().removeEntry(this.entryId);
         }
-        return true;
     }
 
 
@@ -430,7 +420,7 @@ public class ScheduleEntry
      * processes a channel identifier (either a channel name or snowflake ID) into a valid channel
      * and sends an event announcement
      */
-    private void announcementHelper(Message message, String content, String targetIdentifier)
+    private void makeAnnouncement(Message message, String content, String targetIdentifier)
     {
         boolean success = false;
 
@@ -440,21 +430,23 @@ public class ScheduleEntry
             try
             {
                 TextChannel channel = message.getGuild().getTextChannelById(targetIdentifier);
-                if(channel != null)
+                if (channel != null)
                 {
                     MessageUtilities.sendMsg(content, channel, null);
                     success = true;
                 }
             }
-            catch(Exception ignored)
-            {}
+            catch (Exception e)
+            {
+                Logging.warn(this.getClass(), "Error when sending announcement: "+e.getMessage());
+            }
         }
         // if the announcement has not sent using the identifier as a snowflake,
         // treat the identifier as a channel name
-        if(!success && !targetIdentifier.isEmpty())
+        if (!success && !targetIdentifier.isEmpty())
         {
             List<TextChannel> channels = message.getGuild().getTextChannelsByName(targetIdentifier, true);
-            for( TextChannel chan : channels )
+            for (TextChannel chan : channels)
             {
                 MessageUtilities.sendMsg(content, chan, null);
             }
@@ -468,9 +460,8 @@ public class ScheduleEntry
      */
     void reloadDisplay()
     {
-        Message msg = this.getMessageObject();
-        if (msg == null) return;
-        MessageUtilities.editMsg(MessageGenerator.generate(this), msg, null);
+        this.getMessageObject((message)->
+                MessageUtilities.editMsg(MessageGenerator.generate(this), message, null));
     }
 
 
@@ -518,7 +509,8 @@ public class ScheduleEntry
     public boolean handleRSVPReaction(MessageReactionAddEvent event)
     {
         // if past the deadline, don't add handle new RSVPs
-        if(this.getDeadline()!=null && this.getDeadline().plusDays(1).isBefore(ZonedDateTime.now()))
+        if (this.getDeadline()!=null &&
+                this.getDeadline().plusDays(1).isBefore(ZonedDateTime.now()))
             return false;
 
         MessageReaction.ReactionEmote emote = event.getReactionEmote();
@@ -580,6 +572,7 @@ public class ScheduleEntry
                             MessageUtilities.sendMsg(content, loggingChannel, null);
                     }
 
+                    // update the event with the adjusted RSVP list
                     Main.getEntryManager().updateEntry(this, false);
                 }
             }
@@ -636,6 +629,7 @@ public class ScheduleEntry
                                 MessageUtilities.sendMsg(content, loggingChannel, null);
                         }
 
+                        // update the event with the adjusted RSVP list
                         Main.getEntryManager().updateEntry(this, false);
                     }
                 }
@@ -884,7 +878,7 @@ public class ScheduleEntry
     /**
      * retrieves the full map of announcement override active date object
      */
-    public Map<String, Date> getaDates()
+    public Map<String, Date> getAnnouncementDates()
     {
         return this.aDates;
     }
@@ -895,6 +889,11 @@ public class ScheduleEntry
     public Set<Date> getAnnouncements()
     {
         return this.announcements;
+    }
+
+    public String getMessageId()
+    {
+        return this.msgId;
     }
 
     /**
@@ -919,6 +918,23 @@ public class ScheduleEntry
             msg = null;
         }
         return msg;
+    }
+
+    /**
+     * Attempts to retrieve the discord Message, if the message does not exist
+     * (or the bot can for any other reason cannot retrieve it) the method returns null
+     * @return (Message) if exists, otherwise null
+     */
+    public void getMessageObject(Consumer<Message> success)
+    {
+        JDA jda = Main.getShardManager().isSharding() ?
+                Main.getShardManager().getShard(guildId) : Main.getShardManager().getJDA();
+        TextChannel channel = jda.getTextChannelById(this.chanId);
+        if (channel != null)
+        {
+            channel.getMessageById(this.msgId)
+                    .queue(success);
+        }
     }
 
     /*
@@ -1437,7 +1453,6 @@ public class ScheduleEntry
             if(!this.getRsvpLimits().isEmpty())
                 body += "``````js\n" + this.limitsToString();
         }
-
 
         // comments
         if(!this.getComments().isEmpty())
