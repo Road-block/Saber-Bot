@@ -1,6 +1,7 @@
 package ws.nmathe.saber.core.schedule;
 
 import net.dv8tion.jda.core.JDA;
+import net.dv8tion.jda.core.exceptions.PermissionException;
 import org.bson.Document;
 import org.bson.conversions.Bson;
 import ws.nmathe.saber.Main;
@@ -30,16 +31,12 @@ class EntryProcessor implements Runnable
     // thread pool used to process events when emptying the announcement sets
     private static ExecutorService setExecutor = Executors.newCachedThreadPool();
 
-    private enum SetType {END_SET, START_SET, REMIND_SET, SPECIAL_SET}
+    private enum ActionType {END, START, REMIND, SPECIAL}
     private EntryManager.type type;
-    private static Set<Integer> endSet      = Collections.newSetFromMap(new ConcurrentHashMap<>()); // event-end announcements
-    private static Set<Integer> startSet    = Collections.newSetFromMap(new ConcurrentHashMap<>()); // event-start announcements
-    private static Set<Integer> remindSet   = Collections.newSetFromMap(new ConcurrentHashMap<>()); // reminders
-    private static Set<Integer> specialSet  = Collections.newSetFromMap(new ConcurrentHashMap<>()); // event-specific announcements
 
-    // this set is used to track which events are currently being processed and should be ignored
-    // if they appear in later database queries
-    private static Set<Integer> processing  = Collections.newSetFromMap(new ConcurrentHashMap<>());
+    // simple mechanism to avoid conflicting database updates
+    // (ie. simultaneous remind() and announce() update)
+    private static Set<Integer> processing = Collections.newSetFromMap(new ConcurrentHashMap<>());
 
     /** construct the entry processor with type */
     EntryProcessor(EntryManager.type type)
@@ -52,124 +49,51 @@ class EntryProcessor implements Runnable
     {
         try
         {
-            /* Fills the sets which events which have announcements that should be processed */
-            if(type == EntryManager.type.FILL)
+            /*
+             * Process events
+             */
+            if(type == EntryManager.type.PROCESS)
             {
-                Logging.info(this.getClass(), "Processing entries: Filling queues. . .");
+                Logging.info(this.getClass(), "Processing entries. . .");
+                Bson query;
 
-                // process entries which are ending
-                Bson query = and(eq("hasStarted",true), lte("end", new Date()));
-                processAndQueueEvents(SetType.END_SET, query);
+                /*
+                 * process any event-specific announcements
+                 */
+                query = lte("announcements", new Date());
+                processEvents(ActionType.SPECIAL, query);
 
-                // process entries which are starting
+                /*
+                 * process events to end
+                 */
+                query = and(eq("hasStarted",true), lte("end", new Date()));
+                processEvents(ActionType.END, query);
+
+                /*
+                 * process events to start
+                 */
                 query = and(eq("hasStarted",false), lte("start", new Date()));
-                processAndQueueEvents(SetType.START_SET, query);
+                processEvents(ActionType.START, query);
 
-                // process entries with reminders
+                /*
+                 * process events with reminders
+                 */
                 query = and(
                             and(eq("hasStarted",false), lte("reminders", new Date())),
                             gte("start", new Date()));
-                processAndQueueEvents(SetType.REMIND_SET, query);
+                query = or(query,
+                            and(
+                                and(eq("hasStarted",true), lte("end_reminders", new Date())),
+                                gte("end", new Date())));
+                processEvents(ActionType.REMIND, query);
 
-                // process entries with end reminders
-                query = and(
-                            and(eq("hasStarted",true), lte("end_reminders", new Date())),
-                            gte("end", new Date()));
-                processAndQueueEvents(SetType.REMIND_SET, query);
-
-                // process entries with announcement overrides
-                query = lte("announcements", new Date());
-                processAndQueueEvents(SetType.SPECIAL_SET, query);
-
-                Logging.info(this.getClass(), "Finished filling queues.");
+                Logging.info(this.getClass(), "Currently processing "+processing.size()+" events.");
             }
-            /* Processes the events in each set */
-            else if(type == EntryManager.type.EMPTY)
-            {
-                Logging.info(this.getClass(), "Processing entries: Emptying queues. . .");
-                endSet.forEach(entryId ->
-                {
-                    if (!processing.contains(entryId))
-                    {
-                        setExecutor.submit(() ->
-                        {
-                            try
-                            {
-                                processing.add(entryId);
-                                Main.getEntryManager().getEntry(entryId).end();
-                                endSet.remove(entryId);
-                                processing.remove(entryId);
-                            }
-                            catch (Exception e)
-                            {
-                                Logging.exception(this.getClass(), e);
-                            }
-                        });
-                    }
-                });
-                startSet.forEach(entryId ->
-                {
-                    if (!processing.contains(entryId))
-                    {
-                        setExecutor.submit(() ->
-                        {
-                            try
-                            {
-                                processing.add(entryId);
-                                Main.getEntryManager().getEntry(entryId).start();
-                                startSet.remove(entryId);
-                                processing.remove(entryId);
-                            }
-                            catch (Exception e)
-                            {
-                                Logging.exception(this.getClass(), e);
-                            }
-                        });
-                    }
-                });
-                remindSet.forEach(entryId ->
-                {
-                    if (!processing.contains(entryId))
-                    {
-                        setExecutor.submit(() ->
-                        {
-                            try
-                            {
-                                processing.add(entryId);
-                                Main.getEntryManager().getEntry(entryId).remind();
-                                remindSet.remove(entryId);
-                                processing.remove(entryId);
-                            }
-                            catch (Exception e)
-                            {
-                                Logging.exception(this.getClass(), e);
-                            }
-                        });
-                    }
-                });
-                specialSet.forEach(entryId ->
-                {
-                    if (!processing.contains(entryId))
-                    {
-                        setExecutor.submit(() ->
-                        {
-                            try
-                            {
-                                processing.add(entryId);
-                                Main.getEntryManager().getEntry(entryId).announce();
-                                specialSet.remove(entryId);
-                                processing.remove(entryId);
-                            }
-                            catch (Exception e)
-                            {
-                                Logging.exception(this.getClass(), e);
-                            }
-                        });
-                    }
-                });
-                //Logging.info(this.getClass(), "Finished emptying queues.");
-            }
-            else /* Updates the 'starts in x minutes' timer on events */
+
+            /*
+             * Updates the 'starts in x minutes' timer on events
+             */
+            else
             {
                 // dummy document query will filter all events
                 // should an invalid level ever be passed in, all entries will be reloaded!
@@ -201,7 +125,8 @@ class EntryProcessor implements Runnable
                     query = lte("expire", Date.from(ZonedDateTime.now().plusDays(1).toInstant()));
 
                     //delete message objects
-                    Main.getDBDriver().getEventCollection().find(query).forEach((Consumer<? super Document>) document ->
+                    Main.getDBDriver().getEventCollection().find(query)
+                            .forEach((Consumer<? super Document>) document ->
                     {
                         MessageUtilities.deleteMsg((new ScheduleEntry(document)).getMessageObject(), null);
                     });
@@ -261,7 +186,7 @@ class EntryProcessor implements Runnable
                             });
                         });
 
-                Logging.info(this.getClass(), "Finished processing entries. . .");
+                Logging.info(this.getClass(), "Finished updating timers. . .");
             }
         }
         catch(Exception e)
@@ -271,11 +196,11 @@ class EntryProcessor implements Runnable
     }
 
     /**
-     * fills a SetType given a proper query, helper function to run()
-     * @param setIdentifier which SetType to SetType the event for
+     * fills a ActionType given a proper query, helper function to run()
+     * @param action which ActionType to ActionType the event for
      * @param query the database query to use
      */
-    private void processAndQueueEvents(SetType setIdentifier, Bson query)
+    private void processEvents(ActionType action, Bson query)
     {
         Main.getDBDriver().getEventCollection().find(query)
                 .forEach((Consumer<? super Document>) document ->
@@ -288,49 +213,43 @@ class EntryProcessor implements Runnable
                     if(jda == null) return;
                     if(JDA.Status.valueOf("CONNECTED") != jda.getStatus()) return;
 
-                    try
+                    ScheduleEntry se = (new ScheduleEntry(document));
+                    if (processing.add(se.getId()))
                     {
-                        ScheduleEntry se = (new ScheduleEntry(document));
-                        if (se.getMessageObject() == null) return; // don't add to sets
-                        switch(setIdentifier)
+                        setExecutor.submit(() ->
                         {
-                            case END_SET:
-                                if(!endSet.contains(se.getId()))
+                            try
+                            {
+                                switch(action)
                                 {
-                                    endSet.add(se.getId());
-                                    Logging.info(this.getClass(), "Added \"" + se.getTitle() +
-                                    "\" ["+se.getId()+"] to the end set");
+                                    case END:
+                                        se.end();
+                                        break;
+                                    case START:
+                                        se.start();
+                                        break;
+                                    case REMIND:
+                                        se.remind();
+                                        break;
+                                    case SPECIAL:
+                                        se.announce();
+                                        break;
                                 }
-                                break;
-                            case REMIND_SET:
-                                if(!remindSet.contains(se.getId()))
-                                {
-                                    remindSet.add(se.getId());
-                                    Logging.info(this.getClass(), "Added \"" + se.getTitle() +
-                                    "\" ["+se.getId()+"] to the remind set");
-                                }
-                                break;
-                            case START_SET:
-                                if(!startSet.contains(se.getId()))
-                                {
-                                    startSet.add(se.getId());
-                                    Logging.info(this.getClass(), "Added \"" + se.getTitle() +
-                                    "\" ["+se.getId()+"] to the start set");
-                                }
-                                break;
-                            case SPECIAL_SET:
-                                if(!specialSet.contains(se.getId()))
-                                {
-                                    specialSet.add(se.getId());
-                                    Logging.info(this.getClass(), "Added \"" + se.getTitle() +
-                                    "\" ["+se.getId()+"] to the announce set");
-                                }
-                                break;
-                        }
-                    }
-                    catch(Exception e)
-                    {
-                        Logging.exception(this.getClass(), e);
+                            }
+                            catch (PermissionException e)
+                            {
+                                Logging.warn(this.getClass(),
+                                        "Permission error on '"+se.getTitle()+"' ["+se.getId()+"]: "+e.getMessage());
+                            }
+                            catch (Exception e)
+                            {
+                                Logging.exception(this.getClass(), e);
+                            }
+                            finally
+                            {
+                                processing.remove(se.getId());
+                            }
+                        });
                     }
                 });
     }
