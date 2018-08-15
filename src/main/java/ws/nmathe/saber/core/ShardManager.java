@@ -28,7 +28,7 @@ public class ShardManager
     private Iterator<String> games;
 
     private Integer primaryPoolSize = 15;    // used by the jda responsible for handling DMs
-    private Integer secondaryPoolSize = 6;   // used by all other shards
+    private Integer secondaryPoolSize = 7;   // used by all other shards
     private Integer queryTimeout = 5*60*1000;// time to wait for API queries (milliseconds)
 
     private JDABuilder builder;
@@ -97,7 +97,7 @@ public class ShardManager
                 {
                     // build primary shard (id 0)
                     JDA jda = this.builder
-                            //.setCorePoolSize(primaryPoolSize)
+                            .setCorePoolSize(primaryPoolSize)
                             .useSharding(0, shardTotal)
                             .build().awaitReady();
 
@@ -110,7 +110,7 @@ public class ShardManager
                     // -this ought to occur only if the bot is running on multiple systems
                     // -and the current system is not responsible for the primary (0) shard
                     JDA jda = this.builder
-                            //.setCorePoolSize(primaryPoolSize)
+                            .setCorePoolSize(primaryPoolSize)
                             .useSharding(shards.get(0), shardTotal)
                             .build().awaitReady();
 
@@ -135,7 +135,7 @@ public class ShardManager
                             //catch (InterruptedException ignored) {}
                             Logging.info(this.getClass(), "Starting shard " + shardId + ". . .");
                             JDA shard = this.builder
-                                    //.setCorePoolSize(secondaryPoolSize)
+                                    .setCorePoolSize(secondaryPoolSize)
                                     .useSharding(shardId, shardTotal)
                                     .build();
                             this.jdaShards.put(shardId, shard);
@@ -153,7 +153,7 @@ public class ShardManager
             {
                 Logging.info(this.getClass(), "Starting bot without sharding. . .");
                 this.jda = this.builder
-                        //.setCorePoolSize(primaryPoolSize)
+                        .setCorePoolSize(primaryPoolSize)
                         .build().awaitReady();
                 this.jda.setAutoReconnect(true);
                 this.startGamesTimer();
