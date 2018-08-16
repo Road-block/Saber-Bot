@@ -15,12 +15,14 @@ public class Driver
 
     public void init()
     {
+        // for a connection to the Mongo database
+        // connection properties should be configured via the URI used in the bot toml file
         MongoClient mongoClient = new MongoClient(new MongoClientURI(Main.getBotSettingsManager().getMongoURI()));
         db = mongoClient.getDatabase("saberDB");
 
         // schedule a thread to prune disconnected guild, schedules, and events from the database
         ScheduledExecutorService executor = Executors.newSingleThreadScheduledExecutor();
-        executor.scheduleAtFixedRate(new Pruner(), 12*60*60, 12*60*60, TimeUnit.SECONDS);
+        executor.scheduleAtFixedRate(new Pruner(), 12, 12, TimeUnit.HOURS);
     }
 
     public MongoCollection<Document> getScheduleCollection()
