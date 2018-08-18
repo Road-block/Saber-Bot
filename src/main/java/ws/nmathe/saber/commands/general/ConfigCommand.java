@@ -5,7 +5,6 @@ import com.google.api.services.calendar.Calendar;
 import com.vdurmont.emoji.EmojiManager;
 import net.dv8tion.jda.core.JDA;
 import net.dv8tion.jda.core.entities.*;
-import org.apache.commons.lang3.StringUtils;
 import org.bson.Document;
 import ws.nmathe.saber.Main;
 import ws.nmathe.saber.commands.Command;
@@ -18,7 +17,6 @@ import ws.nmathe.saber.utils.MessageUtilities;
 import ws.nmathe.saber.utils.ParsingUtilities;
 import ws.nmathe.saber.utils.VerifyUtilities;
 import java.time.*;
-import java.time.format.TextStyle;
 import java.time.temporal.ChronoUnit;
 import java.util.*;
 import java.util.function.Consumer;
@@ -122,7 +120,7 @@ public class ConfigCommand implements Command
         }
 
         String cId = args[index].replaceAll("[^\\d]","");
-        if( !Main.getScheduleManager().isASchedule(cId) )
+        if( !Main.getScheduleManager().isSchedule(cId) )
         {
             return "Channel " + args[index] + " is not on my list of schedule channels for your guild. " +
                     "Use the ``" + prefix + "init`` command to create a new schedule!";
@@ -130,7 +128,7 @@ public class ConfigCommand implements Command
 
         if(Main.getScheduleManager().isLocked(cId))
         {
-            return "Schedule is locked while sorting/syncing. Please try again after sort/sync finishes.";
+            return "This schedule is locked. Please try again after the sort/sync operation finishes.";
         }
 
         index++;
