@@ -654,56 +654,65 @@ public class ConfigCommand implements Command
 
                 case "z":
                 case "zone":
-                    ZoneId zone = ParsingUtilities.parseZone(args[index]);
-                    Main.getScheduleManager().setTimeZone(scheduleChan.getId(), zone);
-
-                    // correct/reload the event displays
-                    Main.getDBDriver().getEventCollection().find(eq("channelId", scheduleChan.getId()))
-                            .forEach((Consumer<? super Document>) document ->
-                            {
-                                Integer id = document.getInteger("_id");
-
-                                // if the timezone conversion causes the end go past 24:00
-                                // the date needs to be corrected
-                                ScheduleEntry se = Main.getEntryManager().getEntry(id);
-                                if(se.getStart().isAfter(se.getEnd()))
-                                {
-                                    Main.getDBDriver().getEventCollection().updateOne(
-                                            eq("_id", id),
-                                            set("end", Date.from(se.getEnd().plusDays(1).toInstant()))
-                                    );
-                                }
-
-                                // reload the entry's display to match new timezone
-                                Main.getEntryManager().reloadEntry(id);
-                            });
-
-                    // disable auto-sync'ing timezone
-                    Main.getDBDriver().getScheduleCollection()
-                            .updateOne(eq("_id", scheduleChan.getId()), set("timezone_sync", false));
-
-                    MessageUtilities.sendMsg(this.genMsgStr(cId, Mode.MISC, event.getJDA()), event.getChannel(), null);
-                    break;
-
                 case "zones":
                     HashSet<ZoneId> altZones = new HashSet<>();
                     altZones.addAll(Main.getScheduleManager().getAltZones(scheduleChan.getId()));
-                    switch (args[index++].toLowerCase())
+                    ZoneId primaryZone = Main.getScheduleManager().getTimeZone(scheduleChan.getId());
+
+                    ZoneId zone;
+                    switch (args[index].toLowerCase())
                     {
                         case "a":
                         case "add":
-                            altZones.add(ZoneId.of(args[index]));
+                            index++;
+                            zone = ParsingUtilities.parseZone(args[index]);
+
+                            // attempt to add to the alt zones set only if the new zone is not also the primary zone
+                            // Note: different zones can have the same timezone offset (eg. same zones, different names)
+                            if (!primaryZone.equals(zone))
+                            {
+                                altZones.add(zone);
+                            }
                             break;
 
                         case "r":
                         case "remove":
-                            altZones.remove(ZoneId.of(args[index]));
+                            index++;
+                            zone = ParsingUtilities.parseZone(args[index]);
+
+                            // remove the zone from the alt zones list
+                            altZones.remove(zone);
+
+                            // the zone to remove may be the primary zone;
+                            // if so, replace the primary zone with the next alt zone (only if available)
+                            if (primaryZone.equals(zone) && altZones.size() > 0)
+                            {
+                                primaryZone = altZones.iterator().next();
+
+                                // disable auto-sync'ing timezone
+                                Main.getDBDriver().getScheduleCollection()
+                                        .updateOne(eq("_id", scheduleChan.getId()), set("timezone_sync", false));
+                            }
+                            break;
+
+                        default:
+                            primaryZone = ParsingUtilities.parseZone(args[index]);
+                            altZones.remove(primaryZone);
+
+                            // disable auto-sync'ing timezone
+                            Main.getDBDriver().getScheduleCollection()
+                                    .updateOne(eq("_id", scheduleChan.getId()), set("timezone_sync", false));
                             break;
                     }
+
+                    // set the primary and alt zones
+                    Main.getScheduleManager().setTimeZone(scheduleChan.getId(), primaryZone);
+                    Main.getScheduleManager().setAltZones(scheduleChan.getId(), new ArrayList<>(altZones));
+
                     // reload each entry on the schedule
                     Main.getEntryManager().getEntriesFromChannel(scheduleChan.getId())
                             .forEach(se -> Main.getEntryManager().reloadEntry(se.getId()));
-                    Main.getScheduleManager().setAltZones(scheduleChan.getId(), new ArrayList<>(altZones));
+
                     MessageUtilities.sendMsg(this.genMsgStr(cId, Mode.MISC, event.getJDA()), event.getChannel(), null);
                     break;
 
